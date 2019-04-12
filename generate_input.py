@@ -2,9 +2,10 @@ import numpy as np
 import cv2
 import os
 # from matplotlib import pyplot as plt
+from glob import glob
+from skimage.transform import radon
 
-
-def load_images_from_folder(folder, n_im, normalize=False, imrotate=False):
+def load_images_from_folder(folder, n_im, normalize=False, imrotate=False, search_dirs=None, transform='fourier', size=(64, 64)):
     """ Loads n_im images from the folder and puts them in an array bigy of
     size (n_im, im_size1, im_size2), where (im_size1, im_size2) is an image
     size.
@@ -22,35 +23,73 @@ def load_images_from_folder(folder, n_im, normalize=False, imrotate=False):
     """
 
     # Initialize the arrays:
+    w = size[0]
+    h = size[1]
     if imrotate:  # number of images is 4 * n_im
-        bigy = np.empty((n_im * 4, 64, 64))
-        bigx = np.empty((n_im * 4, 64, 64, 2))
+        bigy = np.empty((n_im * 4, h, w))
+        if transform == 'fourier':
+            bigx = np.empty((n_im * 4, h, w, 2))
+        elif transform == 'radon':
+            bigx = np.empty((n_im * 4, h, w, 1))
     else:
-        bigy = np.empty((n_im, 64, 64))
-        bigx = np.empty((n_im, 64, 64, 2))
+        bigy = np.empty((n_im, h, w))
+        if transform == 'fourier':
+            bigx = np.empty((n_im, h, w, 2))
+        elif transform == 'radon':
+            bigx = np.empty((n_im, h, w, 1))
 
     im = 0  # image counter
     for filename in os.listdir(folder):
-        if not filename.startswith('.'):
-            bigy_temp = cv2.imread(os.path.join(folder, filename),
-                                   cv2.IMREAD_GRAYSCALE)
-            bigy[im, :, :] = bigy_temp
-            bigx[im, :, :, :] = create_x(bigy_temp, normalize)
-            im += 1
-            if imrotate:
-                for angle in [90, 180, 270]:
-                    bigy_rot = im_rotate(bigy_temp, angle)
-                    bigx_rot = create_x(bigy_rot, normalize)
-                    bigy[im, :, :] = bigy_rot
-                    bigx[im, :, :, :] = bigx_rot
-                    im += 1
+        if search_dirs is None:
+            if not filename.startswith('.'):
+                bigy_temp = cv2.imread(os.path.join(folder, filename),
+                                    cv2.IMREAD_GRAYSCALE)
+                bigy_temp = cv2.resize(bigy_temp, dsize=(w, h))
+                bigy[im, :, :] = bigy_temp
+                bigx[im, :, :, :] = create_x(bigy_temp, normalize, transform)
+                im += 1
+                if imrotate:
+                    for angle in [90, 180, 270]:
+                        bigy_rot = im_rotate(bigy_temp, angle)
+                        bigx_rot = create_x(bigy_rot, normalize, transform)
+                        bigy[im, :, :] = bigy_rot
+                        bigx[im, :, :, :] = bigx_rot
+                        im += 1
 
-        if imrotate:
-            if im > (n_im * 4 - 1):  # how many images to load
-                break
+            if imrotate:
+                if im > (n_im * 4 - 1):  # how many images to load
+                    break
+            else:
+                if im > (n_im - 1):  # how many images to load
+                    break
         else:
-            if im > (n_im - 1):  # how many images to load
-                break
+            if filename in search_dirs:
+                print('load ', filename)
+                path = os.path.join(folder, filename)
+                search_string = os.path.join(path, '*/*')
+                for file_path in glob(search_string, recursive=True):
+                    if os.path.isfile(file_path):
+                        bigy_temp = cv2.imread(os.path.join(file_path),
+                                            cv2.IMREAD_GRAYSCALE)
+                        # bigy_temp = bigy_temp.max() - bigy_temp
+                        bigy[im, :, :] = bigy_temp
+                        bigx[im, :, :, :] = create_x(bigy_temp, normalize, transform)
+                        im += 1
+                        if imrotate:
+                            for angle in [90, 180, 270]:
+                                bigy_rot = im_rotate(bigy_temp, angle)
+                                bigx_rot = create_x(bigy_rot, normalize, transform)
+                                bigy[im, :, :] = bigy_rot
+                                bigx[im, :, :, :] = bigx_rot
+                                im += 1
+                        if imrotate:
+                            if im > (n_im * 4 - 1):  # how many images to load
+                                break
+                        else:
+                            if im > (n_im - 1):  # how many images to load
+                                break
+
+                        
 
     if normalize:
         bigx = (bigx - np.amin(bigx)) / (np.amax(bigx) - np.amin(bigx))
@@ -58,7 +97,7 @@ def load_images_from_folder(folder, n_im, normalize=False, imrotate=False):
     return bigx, bigy
 
 
-def create_x(y, normalize=False):
+def create_x(y, normalize=False, transform='fourier'):
     """
     Prepares frequency data from image data: applies to_freq_space,
     expands the dimensions from 3D to 4D, and normalizes if normalize=True
@@ -66,8 +105,15 @@ def create_x(y, normalize=False):
     :param normalize: if True - the frequency data will be normalized
     :return: frequency data 4D array of size (1, im_size1, im_size2, 2)
     """
-    x = to_freq_space(y)  # FFT: (128, 128, 2)
-    x = np.expand_dims(x, axis=0)  # (1, 128, 128, 2)
+    if transform == 'fourier':
+        x = to_freq_space(y)  # FFT: (128, 128, 2)
+        x = np.expand_dims(x, axis=0)  # (1, 128, 128, 2)
+    elif transform == 'radon':
+        theta = np.linspace(0., 180., max(y.shape), endpoint=False)
+        x = radon(y, theta=theta, circle=True)
+        x = np.expand_dims(x, axis=0)  # (1, 128, 128)
+        x = np.expand_dims(x, axis=-1)  # (1, 128, 128)
+
     if normalize:
         x = x - np.mean(x)
 
